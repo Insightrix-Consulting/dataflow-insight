@@ -69,6 +69,28 @@ export function useUploadDocument() {
         .single();
 
       if (error) throw error;
+
+      // Trigger extraction for energy documents
+      if (documentType === 'energy') {
+        // Don't await - let it process in background
+        supabase.functions.invoke('extract-energy-invoice', {
+          body: { document_id: data.id }
+        }).then(({ error: extractError }) => {
+          if (extractError) {
+            console.error('Extraction failed:', extractError);
+            // Update document status to failed
+            supabase
+              .from('documents')
+              .update({ status: 'failed' as DocumentStatus })
+              .eq('id', data.id);
+          }
+          // Refresh data after extraction
+          queryClient.invalidateQueries({ queryKey: ['documents'] });
+          queryClient.invalidateQueries({ queryKey: ['energy-invoices'] });
+          queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+        });
+      }
+
       return data as Document;
     },
     onSuccess: () => {
@@ -76,7 +98,7 @@ export function useUploadDocument() {
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       toast({
         title: 'Document uploaded',
-        description: 'Your document has been uploaded and is being processed.',
+        description: 'Your document has been uploaded and is being processed by AI.',
       });
     },
     onError: (error) => {
@@ -108,6 +130,45 @@ export function useUpdateDocumentStatus() {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       queryClient.invalidateQueries({ queryKey: ['energy-invoices'] });
+    }
+  });
+}
+
+export function useRetryExtraction() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (documentId: string) => {
+      // Reset status to processing
+      await supabase
+        .from('documents')
+        .update({ status: 'processing' as DocumentStatus })
+        .eq('id', documentId);
+
+      // Trigger extraction
+      const { data, error } = await supabase.functions.invoke('extract-energy-invoice', {
+        body: { document_id: documentId }
+      });
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      queryClient.invalidateQueries({ queryKey: ['energy-invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      toast({
+        title: 'Extraction started',
+        description: 'The document is being reprocessed.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Extraction failed',
+        description: error.message,
+        variant: 'destructive',
+      });
     }
   });
 }

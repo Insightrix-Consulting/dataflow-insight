@@ -1,7 +1,11 @@
 import { format } from 'date-fns';
+import { Clock, RefreshCw, Loader2 } from 'lucide-react';
 import { Document } from '@/types/database';
 import { StatusBadge } from '@/components/StatusBadge';
 import { ConfidenceBadge } from '@/components/ConfidenceBadge';
+import { Button } from '@/components/ui/button';
+import { useRetryExtraction } from '@/hooks/useDocuments';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   Table,
   TableBody,
@@ -17,6 +21,9 @@ interface ProcessingQueueTableProps {
 }
 
 export function ProcessingQueueTable({ documents, isLoading }: ProcessingQueueTableProps) {
+  const retryExtraction = useRetryExtraction();
+  const { canEdit } = useAuth();
+
   if (isLoading) {
     return (
       <div className="border rounded-lg overflow-hidden">
@@ -42,7 +49,7 @@ export function ProcessingQueueTable({ documents, isLoading }: ProcessingQueueTa
       case 'uploaded':
         return 'Waiting to process';
       case 'processing':
-        return 'Extracting data...';
+        return 'AI extracting data...';
       case 'needs_review':
         return 'Awaiting human review';
       case 'approved':
@@ -65,6 +72,7 @@ export function ProcessingQueueTable({ documents, isLoading }: ProcessingQueueTa
             <TableHead>Processing Step</TableHead>
             <TableHead>Confidence</TableHead>
             <TableHead>Uploaded</TableHead>
+            {canEdit && <TableHead className="text-right">Actions</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -75,8 +83,13 @@ export function ProcessingQueueTable({ documents, isLoading }: ProcessingQueueTa
               <TableCell>
                 <StatusBadge status={doc.status} />
               </TableCell>
-              <TableCell className="text-muted-foreground">
-                {getProcessingStep(doc.status)}
+              <TableCell>
+                <span className={doc.status === 'processing' ? 'flex items-center gap-2' : ''}>
+                  {doc.status === 'processing' && (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  )}
+                  {getProcessingStep(doc.status)}
+                </span>
               </TableCell>
               <TableCell>
                 <ConfidenceBadge confidence={doc.overall_confidence} showLabel={false} />
@@ -84,6 +97,21 @@ export function ProcessingQueueTable({ documents, isLoading }: ProcessingQueueTa
               <TableCell className="text-muted-foreground">
                 {format(new Date(doc.uploaded_at), 'MMM d, yyyy HH:mm')}
               </TableCell>
+              {canEdit && (
+                <TableCell className="text-right">
+                  {(doc.status === 'failed' || doc.status === 'uploaded') && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => retryExtraction.mutate(doc.id)}
+                      disabled={retryExtraction.isPending}
+                    >
+                      <RefreshCw className={`h-4 w-4 mr-1 ${retryExtraction.isPending ? 'animate-spin' : ''}`} />
+                      Retry
+                    </Button>
+                  )}
+                </TableCell>
+              )}
             </TableRow>
           ))}
         </TableBody>
