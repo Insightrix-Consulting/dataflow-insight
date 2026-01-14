@@ -109,15 +109,22 @@ export function InvoiceReviewDialog({ invoice, open, onOpenChange }: InvoiceRevi
         </DialogHeader>
 
         <div className="grid grid-cols-2 gap-6 overflow-y-auto pr-2" style={{ maxHeight: 'calc(90vh - 140px)' }}>
-          {/* Left: PDF Preview placeholder */}
-          <div className="bg-muted/50 rounded-lg flex items-center justify-center min-h-[400px]">
-            <div className="text-center text-muted-foreground">
-              <FileText className="h-16 w-16 mx-auto mb-4 opacity-50" />
-              <p>PDF Preview</p>
-              <p className="text-xs mt-1">
-                {invoice.document?.file_url ? 'Document available' : 'No document uploaded'}
-              </p>
-            </div>
+          {/* Left: PDF Preview */}
+          <div className="bg-muted/50 rounded-lg overflow-hidden min-h-[400px]">
+            {invoice.document?.file_url ? (
+              <iframe
+                src={invoice.document.file_url}
+                className="w-full h-full min-h-[500px] border-0"
+                title={`Preview of ${invoice.document?.filename ?? 'document'}`}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center text-muted-foreground">
+                  <FileText className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                  <p>No document uploaded</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right: Extracted fields */}
