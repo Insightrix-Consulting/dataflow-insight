@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { format } from 'date-fns';
-import { CheckCircle, FileText, AlertTriangle } from 'lucide-react';
+import { CheckCircle, FileText, AlertTriangle, Loader2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -22,6 +22,7 @@ import { ConfidenceBadge, ConfidenceBar } from '@/components/ConfidenceBadge';
 import { EnergyInvoice, ReadingType } from '@/types/database';
 import { useUpdateEnergyInvoice, useApproveInvoice } from '@/hooks/useEnergyInvoices';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSignedUrl } from '@/hooks/useSignedUrl';
 
 interface InvoiceReviewDialogProps {
   invoice: EnergyInvoice | null;
@@ -33,6 +34,7 @@ export function InvoiceReviewDialog({ invoice, open, onOpenChange }: InvoiceRevi
   const { canEdit } = useAuth();
   const updateInvoice = useUpdateEnergyInvoice();
   const approveInvoice = useApproveInvoice();
+  const { signedUrl, loading: urlLoading, error: urlError } = useSignedUrl(invoice?.document?.file_url);
 
   const [formData, setFormData] = useState({
     invoice_date: '',
@@ -111,14 +113,26 @@ export function InvoiceReviewDialog({ invoice, open, onOpenChange }: InvoiceRevi
         <div className="grid grid-cols-2 gap-6 overflow-y-auto pr-2" style={{ maxHeight: 'calc(90vh - 140px)' }}>
           {/* Left: PDF Preview */}
           <div className="bg-muted/50 rounded-lg overflow-hidden min-h-[400px]">
-            {invoice.document?.file_url ? (
+            {urlLoading ? (
+              <div className="flex items-center justify-center h-full min-h-[500px]">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : urlError ? (
+              <div className="flex items-center justify-center h-full min-h-[500px]">
+                <div className="text-center text-destructive">
+                  <AlertTriangle className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                  <p>Failed to load document</p>
+                  <p className="text-sm text-muted-foreground mt-2">{urlError}</p>
+                </div>
+              </div>
+            ) : signedUrl ? (
               <iframe
-                src={invoice.document.file_url}
+                src={signedUrl}
                 className="w-full h-full min-h-[500px] border-0"
                 title={`Preview of ${invoice.document?.filename ?? 'document'}`}
               />
             ) : (
-              <div className="flex items-center justify-center h-full">
+              <div className="flex items-center justify-center h-full min-h-[500px]">
                 <div className="text-center text-muted-foreground">
                   <FileText className="h-16 w-16 mx-auto mb-4 opacity-50" />
                   <p>No document uploaded</p>
