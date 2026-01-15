@@ -17,6 +17,35 @@ interface ExtractionResult {
   confidence_kwh: number;
 }
 
+// Extract file path from URL if needed
+function extractFilePath(url: string): string {
+  // If it's already just a path, return it
+  if (!url.startsWith('http')) {
+    return url;
+  }
+  // Match URLs like: https://xxx.supabase.co/storage/v1/object/public/documents/filename.pdf
+  const match = url.match(/\/storage\/v1\/object\/(?:public|sign)\/documents\/(.+?)(?:\?|$)/);
+  if (match) {
+    return match[1];
+  }
+  // Fallback: try to get the last part after /documents/
+  const parts = url.split('/documents/');
+  if (parts.length > 1) {
+    return parts[1].split('?')[0];
+  }
+  return url;
+}
+
+// Convert ArrayBuffer to base64
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -55,28 +84,38 @@ Deno.serve(async (req) => {
       throw new Error("Document not found");
     }
 
-    console.log("Processing document:", doc.filename);
+    console.log("Processing document:", doc.filename, "File URL:", doc.file_url);
 
-    // For this demo, we'll simulate extraction since we can't actually read PDFs directly
-    // In production, you would use a PDF parsing library or OCR service
-    // The AI will generate realistic sample data based on the filename
+    // Download the PDF from storage
+    const filePath = extractFilePath(doc.file_url);
+    console.log("Extracted file path:", filePath);
+
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from("documents")
+      .download(filePath);
+
+    if (downloadError || !fileData) {
+      console.error("Failed to download file:", downloadError);
+      
+      // Update document status to failed
+      await supabase
+        .from("documents")
+        .update({ status: "failed" })
+        .eq("id", document_id);
+      
+      throw new Error(`Failed to download document: ${downloadError?.message || 'Unknown error'}`);
+    }
+
+    console.log("Downloaded file, size:", fileData.size, "bytes");
+
+    // Convert PDF to base64 for Vision API
+    const arrayBuffer = await fileData.arrayBuffer();
+    const base64Data = arrayBufferToBase64(arrayBuffer);
+    const mimeType = doc.filename.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/png';
     
-    const prompt = `You are an energy invoice data extraction system. Based on the filename "${doc.filename}", generate realistic extracted data for an energy invoice.
+    console.log("Converted to base64, sending to Vision AI...");
 
-Return a JSON object with these fields:
-- invoice_date: A date string in YYYY-MM-DD format (pick a recent date)
-- billing_period_start: Start of billing period in YYYY-MM-DD format
-- billing_period_end: End of billing period in YYYY-MM-DD format (typically 1 month after start)
-- reading_type: One of "Actual", "Estimated", "Customer Read", or "Unknown" (randomly pick with 70% chance of Actual)
-- kwh_used: A realistic number between 200-5000 for residential or 5000-50000 for commercial
-- supplier_name: Infer from filename or use a common UK energy supplier like "British Gas", "EDF Energy", "E.ON", "Scottish Power", "OVO Energy"
-- confidence_invoice_date: Number 75-99 (confidence score)
-- confidence_reading_type: Number 70-95 (confidence score)
-- confidence_kwh: Number 80-99 (confidence score)
-
-Make the confidence scores realistic - if reading_type is "Unknown", make confidence_reading_type lower (60-75).
-Return ONLY the JSON object, no explanation.`;
-
+    // Use Gemini Vision to extract data from the PDF
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -84,45 +123,171 @@ Return ONLY the JSON object, no explanation.`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: "You are a precise data extraction system. Return only valid JSON." },
-          { role: "user", content: prompt }
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `You are an expert energy invoice data extraction system. Analyze this energy invoice document and extract the following information accurately.
+
+IMPORTANT INSTRUCTIONS:
+1. Look carefully at all pages of the document
+2. For dates, convert to YYYY-MM-DD format
+3. For kWh, extract the total consumption figure (not daily or partial readings)
+4. For reading type, look for keywords like:
+   - "Actual" or "A" = Actual reading
+   - "Estimated" or "E" = Estimated reading
+   - "Customer" or "C" = Customer Read
+   - If unclear, use "Unknown"
+5. For supplier name, look at the letterhead, logo, or company name
+6. Provide confidence scores (0-100) based on how clearly visible/readable each value is:
+   - 90-100: Value is clearly visible and unambiguous
+   - 75-89: Value is visible but formatting is non-standard
+   - 60-74: Value is partially visible or inferred
+   - Below 60: Value is guessed or not found
+
+Extract the data now.`
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:${mimeType};base64,${base64Data}`
+                }
+              }
+            ]
+          }
         ],
-        temperature: 0.7,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "extract_invoice_data",
+              description: "Extract structured data from an energy invoice",
+              parameters: {
+                type: "object",
+                properties: {
+                  invoice_date: { 
+                    type: "string", 
+                    description: "Invoice date in YYYY-MM-DD format" 
+                  },
+                  billing_period_start: { 
+                    type: "string", 
+                    description: "Billing period start date in YYYY-MM-DD format" 
+                  },
+                  billing_period_end: { 
+                    type: "string", 
+                    description: "Billing period end date in YYYY-MM-DD format" 
+                  },
+                  reading_type: { 
+                    type: "string", 
+                    enum: ["Actual", "Estimated", "Customer Read", "Unknown"],
+                    description: "Type of meter reading" 
+                  },
+                  kwh_used: { 
+                    type: "number", 
+                    description: "Total kWh consumed during billing period" 
+                  },
+                  supplier_name: { 
+                    type: "string", 
+                    description: "Name of the energy supplier" 
+                  },
+                  confidence_invoice_date: { 
+                    type: "number", 
+                    description: "Confidence score 0-100 for invoice date extraction" 
+                  },
+                  confidence_reading_type: { 
+                    type: "number", 
+                    description: "Confidence score 0-100 for reading type extraction" 
+                  },
+                  confidence_kwh: { 
+                    type: "number", 
+                    description: "Confidence score 0-100 for kWh extraction" 
+                  }
+                },
+                required: [
+                  "invoice_date", 
+                  "billing_period_start", 
+                  "billing_period_end", 
+                  "reading_type", 
+                  "kwh_used", 
+                  "supplier_name",
+                  "confidence_invoice_date",
+                  "confidence_reading_type",
+                  "confidence_kwh"
+                ],
+                additionalProperties: false
+              }
+            }
+          }
+        ],
+        tool_choice: { type: "function", function: { name: "extract_invoice_data" } }
       }),
     });
 
     if (!aiResponse.ok) {
       const errorText = await aiResponse.text();
-      console.error("AI Gateway error:", errorText);
+      console.error("AI Gateway error:", aiResponse.status, errorText);
+      
+      if (aiResponse.status === 429) {
+        await supabase
+          .from("documents")
+          .update({ status: "failed" })
+          .eq("id", document_id);
+        throw new Error("Rate limit exceeded. Please try again later.");
+      }
+      if (aiResponse.status === 402) {
+        await supabase
+          .from("documents")
+          .update({ status: "failed" })
+          .eq("id", document_id);
+        throw new Error("AI credits exhausted. Please add credits to continue.");
+      }
       throw new Error(`AI extraction failed: ${aiResponse.status}`);
     }
 
     const aiData = await aiResponse.json();
-    const content = aiData.choices?.[0]?.message?.content || "";
+    console.log("AI Response received");
     
-    // Parse the JSON response
+    // Extract the tool call result
     let extraction: ExtractionResult;
     try {
-      // Clean up the response - remove markdown code blocks if present
-      const cleanContent = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      extraction = JSON.parse(cleanContent);
+      const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
+      if (toolCall && toolCall.function?.arguments) {
+        extraction = JSON.parse(toolCall.function.arguments);
+        console.log("Extracted data via tool call:", extraction);
+      } else {
+        // Fallback: try to parse content if no tool call
+        const content = aiData.choices?.[0]?.message?.content || "";
+        const cleanContent = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        extraction = JSON.parse(cleanContent);
+        console.log("Extracted data from content:", extraction);
+      }
     } catch (parseError) {
-      console.error("Failed to parse AI response:", content);
-      // Fallback extraction
-      extraction = {
-        invoice_date: new Date().toISOString().split("T")[0],
-        billing_period_start: "2024-01-01",
-        billing_period_end: "2024-01-31",
-        reading_type: "Unknown",
-        kwh_used: 1500,
-        supplier_name: "Unknown Supplier",
-        confidence_invoice_date: 60,
-        confidence_reading_type: 50,
-        confidence_kwh: 60,
-      };
+      console.error("Failed to parse AI response:", aiData);
+      
+      // Set document to failed state
+      await supabase
+        .from("documents")
+        .update({ status: "failed" })
+        .eq("id", document_id);
+      
+      throw new Error("Failed to parse extraction results");
     }
+
+    // Validate and sanitize extraction data
+    extraction = {
+      invoice_date: extraction.invoice_date || null,
+      billing_period_start: extraction.billing_period_start || null,
+      billing_period_end: extraction.billing_period_end || null,
+      reading_type: extraction.reading_type || "Unknown",
+      kwh_used: typeof extraction.kwh_used === 'number' ? extraction.kwh_used : null,
+      supplier_name: extraction.supplier_name || "Unknown Supplier",
+      confidence_invoice_date: Math.min(100, Math.max(0, extraction.confidence_invoice_date || 50)),
+      confidence_reading_type: Math.min(100, Math.max(0, extraction.confidence_reading_type || 50)),
+      confidence_kwh: Math.min(100, Math.max(0, extraction.confidence_kwh || 50)),
+    };
 
     // Calculate overall confidence
     const overallConfidence = Math.round(
@@ -137,8 +302,10 @@ Return ONLY the JSON object, no explanation.`;
       extraction.confidence_reading_type < 85 ||
       extraction.confidence_kwh < 85;
 
+    console.log("Overall confidence:", overallConfidence, "Needs review:", needsReview);
+
     // Update document with supplier name and confidence
-    await supabase
+    const { error: updateError } = await supabase
       .from("documents")
       .update({
         supplier_name: extraction.supplier_name,
@@ -146,6 +313,10 @@ Return ONLY the JSON object, no explanation.`;
         status: needsReview ? "needs_review" : "approved",
       })
       .eq("id", document_id);
+
+    if (updateError) {
+      console.error("Failed to update document:", updateError);
+    }
 
     // Create energy invoice record
     const { error: invoiceError } = await supabase
@@ -169,6 +340,8 @@ Return ONLY the JSON object, no explanation.`;
 
     console.log("Extraction complete:", {
       document_id,
+      supplier: extraction.supplier_name,
+      kwh: extraction.kwh_used,
       overall_confidence: overallConfidence,
       needs_review: needsReview,
     });
