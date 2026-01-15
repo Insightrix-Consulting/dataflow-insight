@@ -150,3 +150,91 @@ export function useApproveInvoice() {
     }
   });
 }
+
+// Extract file path from URL for storage deletion
+function extractFilePath(url: string): string | null {
+  if (!url) return null;
+  if (!url.startsWith('http')) {
+    return url;
+  }
+  const match = url.match(/\/storage\/v1\/object\/(?:public|sign)\/documents\/(.+?)(?:\?|$)/);
+  if (match) {
+    return match[1];
+  }
+  const parts = url.split('/documents/');
+  if (parts.length > 1) {
+    return parts[1].split('?')[0];
+  }
+  return null;
+}
+
+export function useDeleteEnergyInvoice() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      // Get the invoice with document info first
+      const { data: invoice, error: fetchError } = await supabase
+        .from('energy_invoices')
+        .select('document_id, document:documents(file_url)')
+        .eq('id', invoiceId)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      // Delete the energy invoice record
+      const { error: invoiceError } = await supabase
+        .from('energy_invoices')
+        .delete()
+        .eq('id', invoiceId);
+
+      if (invoiceError) throw invoiceError;
+
+      // Delete the document record
+      if (invoice.document_id) {
+        const { error: docError } = await supabase
+          .from('documents')
+          .delete()
+          .eq('id', invoice.document_id);
+
+        if (docError) {
+          console.error('Failed to delete document record:', docError);
+        }
+
+        // Delete the file from storage
+        const fileUrl = (invoice.document as any)?.file_url;
+        if (fileUrl) {
+          const filePath = extractFilePath(fileUrl);
+          if (filePath) {
+            const { error: storageError } = await supabase.storage
+              .from('documents')
+              .remove([filePath]);
+
+            if (storageError) {
+              console.error('Failed to delete file from storage:', storageError);
+            }
+          }
+        }
+      }
+
+      return { success: true };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['energy-invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      toast({
+        title: 'Invoice deleted',
+        description: 'The invoice and associated document have been removed.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Delete failed',
+        description: error.message,
+        variant: 'destructive',
+      });
+    }
+  });
+}

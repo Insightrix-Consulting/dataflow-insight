@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, CheckCircle, Edit } from 'lucide-react';
+import { Eye, Edit, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { EnergyInvoice } from '@/types/database';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -13,8 +13,19 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { InvoiceReviewDialog } from './InvoiceReviewDialog';
 import { useAuth } from '@/contexts/AuthContext';
+import { useDeleteEnergyInvoice } from '@/hooks/useEnergyInvoices';
 
 interface EnergyInvoicesTableProps {
   invoices: EnergyInvoice[];
@@ -23,7 +34,21 @@ interface EnergyInvoicesTableProps {
 
 export function EnergyInvoicesTable({ invoices, isLoading }: EnergyInvoicesTableProps) {
   const [selectedInvoice, setSelectedInvoice] = useState<EnergyInvoice | null>(null);
-  const { canEdit } = useAuth();
+  const [invoiceToDelete, setInvoiceToDelete] = useState<EnergyInvoice | null>(null);
+  const { canEdit, isAdmin } = useAuth();
+  const deleteInvoice = useDeleteEnergyInvoice();
+
+  const handleDelete = (invoice: EnergyInvoice, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setInvoiceToDelete(invoice);
+  };
+
+  const confirmDelete = () => {
+    if (invoiceToDelete) {
+      deleteInvoice.mutate(invoiceToDelete.id);
+      setInvoiceToDelete(null);
+    }
+  };
 
   const getOverallConfidence = (invoice: EnergyInvoice) => {
     const confidences = [
@@ -140,6 +165,16 @@ export function EnergyInvoicesTable({ invoices, isLoading }: EnergyInvoicesTable
                           </>
                         )}
                       </Button>
+                      {isAdmin && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={(e) => handleDelete(invoice, e)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -154,6 +189,32 @@ export function EnergyInvoicesTable({ invoices, isLoading }: EnergyInvoicesTable
         open={!!selectedInvoice}
         onOpenChange={(open) => !open && setSelectedInvoice(null)}
       />
+
+      <AlertDialog open={!!invoiceToDelete} onOpenChange={(open) => !open && setInvoiceToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Invoice</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this invoice? This will permanently remove:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>The extracted invoice data</li>
+                <li>The document record</li>
+                <li>The uploaded file</li>
+              </ul>
+              <p className="mt-2 font-medium">This action cannot be undone.</p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
